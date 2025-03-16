@@ -6,6 +6,7 @@ from pydantic import TypeAdapter
 import requests
 import yfinance as yf
 import json
+import gradio as gr
 
 
 def get_symbol(company: str) -> str:
@@ -74,13 +75,16 @@ FUNCTION_MAP = {
 
 load_dotenv()
 # Đọc từ file .env cùng thư mục, nhưng đừng commit nha!
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-client = OpenAI(api_key=OPENAI_API_KEY)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+client = OpenAI(
+    base_url="https://api.groq.com/openai/v1",
+    api_key=GROQ_API_KEY
+    )
 
 
 def get_completion(messages):
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gemma2-9b-it",
         messages=messages,
         tools=tools,
         # Để temparature=0 để kết quả ổn định sau nhiều lần chạy
@@ -91,41 +95,53 @@ def get_completion(messages):
 
 # Bắt đầu làm bài tập từ line này!
 
-question = "Giá cổ phiếu hiện tại của Vinfast là bao nhiêu?"
+def chat_logic_AI(message, history_message):
+    messages = [
+        #{"role": "system", "content": "You are a helpful customer support assistant. Use the supplied tools to assist the user."}
+    ]
+    for user_message, bot_message in history_message:
+        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "assistant", "content": bot_message})
+        
+    messages.append({"role": "user", "content": message})
+    
+    history_message.append([message, "waitting.."])
+    yield "", history_message
 
-messages = [
-    {"role": "system", "content": "You are a helpful customer support assistant. Use the supplied tools to assist the user."},
-    {"role": "user", "content": question}
-]
-
-response = get_completion(messages)
-first_choice = response.choices[0]
-finish_reason = first_choice.finish_reason
-
-# Loop cho tới khi model báo stop và đưa ra kết quả
-while finish_reason != "stop":
-    tool_call = first_choice.message.tool_calls[0]
-
-    tool_call_function = tool_call.function
-    tool_call_arguments = json.loads(tool_call_function.arguments)
-
-    tool_function = FUNCTION_MAP[tool_call_function.name]
-    result = tool_function(**tool_call_arguments)
-
-    messages.append(first_choice.message)
-    messages.append({
-        "role": "tool",
-        "tool_call_id": tool_call.id,
-        "name": tool_call_function.name,
-        "content": json.dumps({"result": result})
-    })
-
-    print(messages)
-
-    # Chờ kết quả từ LLM
     response = get_completion(messages)
     first_choice = response.choices[0]
     finish_reason = first_choice.finish_reason
 
-# In ra kết quả sau khi đã thoát khỏi vòng lặp
-print(first_choice.message.content)
+    # Loop cho tới khi model báo stop và đưa ra kết quả
+    while finish_reason != "stop":
+        tool_call = first_choice.message.tool_calls[0]
+        tool_call_function = tool_call.function
+        tool_call_arguments = json.loads(tool_call_function.arguments)
+
+        tool_function = FUNCTION_MAP[tool_call_function.name]
+        result = tool_function(**tool_call_arguments)
+
+        messages.append(first_choice.message)
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "name": tool_call_function.name,
+            "content": json.dumps({"result": result})
+        })
+
+        # Chờ kết quả từ LLM
+        response = get_completion(messages)
+        first_choice = response.choices[0]
+        finish_reason = first_choice.finish_reason
+
+    final_response = first_choice.message.content or ""
+    history_message[-1][1] = final_response
+    yield "", history_message
+
+with gr.Blocks() as blocks:
+    gr.Markdown("#Chatbot")
+    message = gr.Textbox(label="Nhap tin nhan:")
+    chatbot = gr.Chatbot(label="Chatbot", height=600)
+    message.submit(chat_logic_AI, [message, chatbot], [message, chatbot])
+
+blocks.launch()
